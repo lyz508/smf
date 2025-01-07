@@ -3,6 +3,7 @@ package processor
 import (
 	"net"
 	"reflect"
+	"strconv"
 
 	"github.com/free5gc/openapi/models"
 	"github.com/free5gc/pfcp/pfcpType"
@@ -155,6 +156,43 @@ func EstablishULCL(smContext *context.SMContext) {
 					pduLevelChargingUrrs = pccRule.Datapath.GetChargingUrr(smContext)
 					break
 				}
+			}
+
+			urrId := pduLevelChargingUrrs[0].URRID
+			if smContext.ChargingInfo[urrId].ChargingMethod == models.QuotaManagementIndicator_ONLINE_CHARGING {
+				var urr *context.URR
+				newChgInfo := &context.ChargingInfo{
+					RatingGroup:   smContext.ChargingInfo[urrId].RatingGroup,
+					ChargingLevel: smContext.ChargingInfo[urrId].ChargingLevel,
+					UpfId:         curDPNode.UPF.UUID(),
+				}
+				newUrrId, err := smContext.UrrIDGenerator.Allocate()
+				if err != nil {
+					logger.PduSessLog.Errorln("Generate URR Id failed")
+					return
+				}
+
+				currentUUID := curDPNode.UPF.UUID()
+				id := currentUUID + ":" + strconv.Itoa(int(uint32(newUrrId)))
+
+				if oldURR, ok := smContext.UrrUpfMap[id]; !ok {
+					if newURR, err2 := curDPNode.UPF.AddURR(uint32(newUrrId),
+						context.NewMeasureInformation(false, false),
+						context.SetStartOfSDFTrigger()); err2 != nil {
+						logger.PduSessLog.Errorln("new URR failed")
+						continue
+					} else {
+						urr = newURR
+					}
+					newChgInfo.ChargingMethod = models.QuotaManagementIndicator_ONLINE_CHARGING
+					smContext.UrrUpfMap[id] = urr
+				} else {
+					urr = oldURR
+				}
+				smContext.Log.Tracef("Successfully add URR %d for Rating group %d", urr.URRID, smContext.ChargingInfo[urrId].RatingGroup)
+				smContext.ChargingInfo[urr.URRID] = newChgInfo
+				pduLevelChargingUrrs = pduLevelChargingUrrs[:0]
+				pduLevelChargingUrrs = append(pduLevelChargingUrrs, urr)
 			}
 
 			// Append URRs to anchor UPF
